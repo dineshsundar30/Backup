@@ -10,7 +10,6 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 import logging
 import time
-import threading
 
 
 class MT5TradingBot:
@@ -21,8 +20,6 @@ class MT5TradingBot:
         self.logger = self._setup_logging()
         self.min_balance = 10
         self.fixed_lot = 0.01
-        self._trade_lock = threading.Lock()
-        self._is_trading = False
 
         if not mt5.initialize():
             error = mt5.last_error()
@@ -38,7 +35,7 @@ class MT5TradingBot:
         risk_ratio = 2
         sl_distance = atr * 1
         tp_distance = sl_distance * risk_ratio
-        
+
         return {
             'buy': {
                 'sl': current_price - sl_distance,
@@ -120,63 +117,61 @@ class MT5TradingBot:
         return model
 
     def execute_trade(self, signal, model, X_latest, latest_data):
-        with self._trade_lock:
-            # Check if a trade is already in progress
-            if self._is_trading:
-                self.logger.info("A trade is already in progress. Skipping...")
+        try:
+            # Check if account is viable
+            if not self.check_account_viability():
                 return None
 
-            try:
-                self._is_trading = True
+            # Check if a trade for this symbol is already running
+            positions = mt5.positions_get(symbol=self.symbol)
+            if positions:
+                self.logger.info(f"Active trade already exists for {self.symbol}. Skipping trade.")
+                return None
 
-                if not self.check_account_viability():
-                    return None
+            # Confidence check
+            confidence = model.predict_proba(X_latest)[0]
+            if confidence[signal] < 0.85:
+                self.logger.info("Confidence too low for trading")
+                return None
 
-                confidence = model.predict_proba(X_latest)[0]
-                if confidence[signal] < 0.85:
-                    self.logger.info("Confidence too low for trading")
-                    return None
+            current_price = latest_data['close'].iloc[0]
+            current_atr = latest_data['atr'].iloc[0]
 
-                current_price = latest_data['close'].iloc[0]
-                current_atr = latest_data['atr'].iloc[0]
+            tp_sl_levels = self.calculate_tp_sl(current_price, current_atr)
 
-                tp_sl_levels = self.calculate_tp_sl(current_price, current_atr)
+            if signal == 1:  # Buy
+                trade_type = mt5.ORDER_TYPE_BUY
+                price = mt5.symbol_info_tick(self.symbol).ask
+                sl = tp_sl_levels['buy']['sl']
+                tp = tp_sl_levels['buy']['tp']
+            else:  # Sell
+                trade_type = mt5.ORDER_TYPE_SELL
+                price = mt5.symbol_info_tick(self.symbol).bid
+                sl = tp_sl_levels['sell']['sl']
+                tp = tp_sl_levels['sell']['tp']
 
-                if signal == 1:  # Buy
-                    trade_type = mt5.ORDER_TYPE_BUY
-                    price = mt5.symbol_info_tick(self.symbol).ask
-                    sl = tp_sl_levels['buy']['sl']
-                    tp = tp_sl_levels['buy']['tp']
-                else:  # Sell
-                    trade_type = mt5.ORDER_TYPE_SELL
-                    price = mt5.symbol_info_tick(self.symbol).bid
-                    sl = tp_sl_levels['sell']['sl']
-                    tp = tp_sl_levels['sell']['tp']
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": self.symbol,
+                "volume": self.fixed_lot,
+                "type": trade_type,
+                "price": price,
+                "sl": sl,
+                "tp": tp,
+                "deviation": 20,
+                "magic": 234000,
+                "comment": "Dynamic TP/SL Trade"
+            }
 
-                request = {
-                    "action": mt5.TRADE_ACTION_DEAL,
-                    "symbol": self.symbol,
-                    "volume": self.fixed_lot,
-                    "type": trade_type,
-                    "price": price,
-                    "sl": sl,
-                    "tp": tp,
-                    "deviation": 20,
-                    "magic": 234000,
-                    "comment": "Dynamic TP/SL Trade"
-                }
+            result = mt5.order_send(request)
+            if result.retcode == mt5.TRADE_RETCODE_DONE:
+                self.logger.info(f"Trade executed: {self.fixed_lot} lots")
+                self.logger.info(f"Entry: {price}, SL: {sl}, TP: {tp}")
+            else:
+                self.logger.error(f"Trade failed: {result.comment}")
 
-                result = mt5.order_send(request)
-                if result.retcode == mt5.TRADE_RETCODE_DONE:
-                    self.logger.info(f"Trade executed: {self.fixed_lot} lots")
-                    self.logger.info(f"Entry: {price}, SL: {sl}, TP: {tp}")
-                else:
-                    self.logger.error(f"Trade failed: {result.comment}")
-
-            except Exception as e:
-                self.logger.error(f"Trade execution error: {e}")
-            finally:
-                self._is_trading = False
+        except Exception as e:
+            self.logger.error(f"Trade execution error: {e}")
 
     def run_trading_cycle(self):
         while True:
@@ -189,9 +184,9 @@ class MT5TradingBot:
 
                 latest_data = indicators_data.iloc[-1:]
                 X_latest = StandardScaler().fit_transform(latest_data[
-                    ['sma_50', 'ema_20', 'rsi', 'macd', 'atr',
-                     'bbands_upper', 'bbands_lower', 'willr']
-                ])
+                                                              ['sma_50', 'ema_20', 'rsi', 'macd', 'atr',
+                                                               'bbands_upper', 'bbands_lower', 'willr']
+                                                          ])
 
                 signal = model.predict(X_latest)[0]
                 self.execute_trade(signal, model, X_latest, latest_data)
