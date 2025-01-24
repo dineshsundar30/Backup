@@ -35,7 +35,7 @@ class MT5TradingBot:
         risk_ratio = 2
         sl_distance = atr * 1
         tp_distance = sl_distance * risk_ratio
-
+        
         return {
             'buy': {
                 'sl': current_price - sl_distance,
@@ -184,9 +184,9 @@ class MT5TradingBot:
 
                 latest_data = indicators_data.iloc[-1:]
                 X_latest = StandardScaler().fit_transform(latest_data[
-                                                              ['sma_50', 'ema_20', 'rsi', 'macd', 'atr',
-                                                               'bbands_upper', 'bbands_lower', 'willr']
-                                                          ])
+                    ['sma_50', 'ema_20', 'rsi', 'macd', 'atr',
+                     'bbands_upper', 'bbands_lower', 'willr']
+                ])
 
                 signal = model.predict(X_latest)[0]
                 self.execute_trade(signal, model, X_latest, latest_data)
