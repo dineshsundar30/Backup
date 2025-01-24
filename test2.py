@@ -1,179 +1,168 @@
 import MetaTrader5 as mt5
 import pandas as pd
+import numpy as np
+import talib
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import StackingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+import logging
 import time
-#with cooling period before and after the tread
-# Initialize MetaTrader 5
-if not mt5.initialize():
-    print("Failed to initialize MetaTrader 5.")
-    exit()
 
-# Trading parameters
-symbol = "XAUUSDm"
-lot = 0.01
-atr_period = 14
-stop_loss_multiplier = 1.0
-take_profit_multiplier = 3.0
-deviation = 20
-breakout_period = 5
 
-# Define session hours
-session_start = 10
-session_end = 22
+class MT5TradingBot:
+    def __init__(self, symbol='XAUUSDm', timeframe=mt5.TIMEFRAME_M5, interval=300):
+        self.symbol = symbol
+        self.timeframe = timeframe
+        self.interval = interval
+        self.logger = self._setup_logging()
+        self.min_balance = 10  # Minimum balance to continue trading
+        self.fixed_lot = 0.01  # Fixed lot size for small accounts
 
-# Cooling period (in seconds)
-cooling_period = 300
-last_trade_time = None
-start_time = time.time()  # Track script start time
+        if not mt5.initialize():
+            error = mt5.last_error()
+            self.logger.error(f"MT5 Initialization Error: {error}")
+            raise Exception(f"MT5 Connection Failed: {error}")
 
-# Logging setup
-log_data = []
+    def _setup_logging(self):
+        logging.basicConfig(level=logging.INFO,
+                            format='%(asctime)s - %(levelname)s: %(message)s')
+        return logging.getLogger(__name__)
 
-while True:
-    # Check cooling period after starting or after a trade
-    current_time = time.time()
-    if (current_time - start_time < cooling_period) or (last_trade_time and (current_time - last_trade_time < cooling_period)):
-        print("Cooling period active. Waiting...")
-        time.sleep(5)
-        continue
+    def check_account_viability(self):
+        account_info = mt5.account_info()
+        if account_info is None:
+            self.logger.error("Cannot retrieve account information")
+            return False
 
-    # Ensure the symbol is available
-    symbol_info = mt5.symbol_info(symbol)
-    if symbol_info is None or not symbol_info.visible:
-        print(f"Symbol {symbol} is not available or not visible.")
-        mt5.shutdown()
-        exit()
+        balance = account_info.balance
+        self.logger.info(f"Current Account Balance: ${balance:.2f}")
 
-    if not symbol_info.visible:
-        mt5.symbol_select(symbol, True)
+        if balance < self.min_balance:
+            self.logger.error(f"Insufficient balance. Current: ${balance:.2f}, Minimum: ${self.min_balance}")
+            return False
+        return True
 
-    # Fetch historical data (5-minute candles)
-    rates_5m = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, 200)
+    def fetch_historical_data(self, lookback_periods=2000):
+        rates = mt5.copy_rates_from_pos(self.symbol, self.timeframe, 0, lookback_periods)
+        return pd.DataFrame(rates)
 
-    if rates_5m is None or len(rates_5m) == 0:
-        print("No data retrieved. Retrying...")
-        time.sleep(60)
-        continue
+    def calculate_advanced_indicators(self, df):
+        df = df.copy()
+        df['sma_50'] = talib.SMA(df['close'], timeperiod=50)
+        df['ema_20'] = talib.EMA(df['close'], timeperiod=20)
+        df['rsi'] = talib.RSI(df['close'], timeperiod=14)
+        df['macd'], df['macdsignal'], _ = talib.MACD(df['close'])
+        df['atr'] = talib.ATR(df['high'], df['low'], df['close'], timeperiod=14)
+        df['bbands_upper'], _, df['bbands_lower'] = talib.BBANDS(df['close'])
+        df['willr'] = talib.WILLR(df['high'], df['low'], df['close'])
 
-    data_5m = pd.DataFrame(rates_5m)
-    data_5m["time"] = pd.to_datetime(data_5m["time"], unit="s")
+        return df.dropna()
 
-    # Calculate ATR for 5-minute data
-    data_5m["tr"] = data_5m["high"] - data_5m["low"]
-    data_5m["atr"] = data_5m["tr"].rolling(window=atr_period).mean()
+    def prepare_training_data(self, df):
+        df = df.copy()
+        features = [
+            'sma_50', 'ema_20', 'rsi', 'macd',
+            'atr', 'bbands_upper', 'bbands_lower', 'willr'
+        ]
 
-    if len(data_5m) < max(breakout_period, atr_period):
-        print("Not enough data for calculations. Retrying...")
-        time.sleep(60)
-        continue
+        df.loc[:, 'future_return'] = df['close'].shift(-10) / df['close'] - 1
+        X = df[features]
+        y = np.where(df['future_return'] > 0.001, 1, 0)
 
-    # Identify breakout range (high and low of the last 'breakout_period' candles)
-    breakout_high = data_5m["high"].iloc[-breakout_period:].max()
-    breakout_low = data_5m["low"].iloc[-breakout_period:].min()
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
 
-    # Get current prices
-    tick = mt5.symbol_info_tick(symbol)
-    if tick is None:
-        print("Failed to retrieve current prices. Retrying...")
-        time.sleep(1)
-        continue
+        return train_test_split(X_scaled, y, test_size=0.2, random_state=42)
 
-    ask_price = tick.ask
-    bid_price = tick.bid
+    def create_stacked_model(self):
+        base_models = [
+            ('rf', RandomForestClassifier(n_estimators=100, random_state=42)),
+            ('gb', GradientBoostingClassifier(n_estimators=100, random_state=42)),
+            ('dt', DecisionTreeClassifier(random_state=42))
+        ]
 
-    # Determine breakout conditions with trend filter
-    data_5m["ema"] = data_5m["close"].ewm(span=20).mean()
-    trend_filter = ask_price > data_5m["ema"].iloc[-1]
+        stacked_model = StackingClassifier(
+            estimators=base_models,
+            final_estimator=LogisticRegression(),
+            cv=5
+        )
 
-    buy_condition = ask_price > breakout_high and trend_filter
-    sell_condition = bid_price < breakout_low and not trend_filter
+        return stacked_model
 
-    # Calculate Stop Loss and Take Profit
-    atr_5m = data_5m["atr"].iloc[-1]
-    stop_loss_points = max(atr_5m * stop_loss_multiplier, 10 * symbol_info.point)
-    take_profit_points = stop_loss_points * take_profit_multiplier
+    def train_prediction_model(self, X_train, X_test, y_train, y_test):
+        model = self.create_stacked_model()
+        cv_scores = cross_val_score(model, X_train, y_train, cv=5)
+        model.fit(X_train, y_train)
 
-    tp_price = None
-    sl_price = None
-    request = None
+        accuracy = model.score(X_test, y_test)
+        self.logger.info(f"Model Cross-Validation Scores: {cv_scores}")
+        self.logger.info(f"Model Accuracy: {accuracy * 100:.2f}%")
 
-    positions_total = mt5.positions_total()
-    current_hour = pd.Timestamp.now().hour
+        return model
 
-    if positions_total == 0 and session_start <= current_hour <= session_end:  # Only trade during session hours
-        if buy_condition:  # Buy breakout
-            print("Buying breakout...")
-            tp_price = ask_price + take_profit_points
-            sl_price = ask_price - stop_loss_points
+    def execute_trade(self, signal, model, X_latest):
+        try:
+            # Verify account viability
+            if not self.check_account_viability():
+                return None
 
-            if sl_price >= ask_price or tp_price <= ask_price:
-                print("Invalid stop levels for Buy order. Skipping...")
-                continue
+            confidence = model.predict_proba(X_latest)[0]
+            if confidence[signal] < 0.85:
+                self.logger.info("Confidence too low for trading")
+                return None
 
             request = {
                 "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": symbol,
-                "volume": lot,
-                "type": mt5.ORDER_TYPE_BUY,
-                "price": ask_price,
-                "tp": tp_price,
-                "sl": sl_price,
-                "deviation": deviation,
-                "magic": 3092000,
-                "comment": "Buy breakout order",
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
+                "symbol": self.symbol,
+                "volume": self.fixed_lot,
+                "type": mt5.ORDER_TYPE_BUY if signal == 1 else mt5.ORDER_TYPE_SELL,
+                "price": mt5.symbol_info_tick(self.symbol).ask if signal == 1 else mt5.symbol_info_tick(self.symbol).bid,
+                "deviation": 20,
+                "magic": 234000,
+                "comment": f"Low Balance Trade"
             }
 
-        elif sell_condition:  # Sell breakout
-            print("Selling breakout...")
-            tp_price = bid_price - take_profit_points
-            sl_price = bid_price + stop_loss_points
+            result = mt5.order_send(request)
+            if result.retcode == mt5.TRADE_RETCODE_DONE:
+                self.logger.info(f"Trade executed: {self.fixed_lot} lots")
+            else:
+                self.logger.error(f"Trade failed: {result.comment}")
 
-            if sl_price <= bid_price or tp_price >= bid_price:
-                print("Invalid stop levels for Sell order. Skipping...")
-                continue
+        except Exception as e:
+            self.logger.error(f"Trade execution error: {e}")
 
-            request = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": symbol,
-                "volume": lot,
-                "type": mt5.ORDER_TYPE_SELL,
-                "price": bid_price,
-                "tp": tp_price,
-                "sl": sl_price,
-                "deviation": deviation,
-                "magic": 3092000,
-                "comment": "Sell breakout order",
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
-            }
+    def run_trading_cycle(self):
+        while True:
+            try:
+                historical_data = self.fetch_historical_data()
+                indicators_data = self.calculate_advanced_indicators(historical_data)
 
-        else:
-            print("No breakout condition met. Skipping...")
-            time.sleep(2)
-            continue
+                X_train, X_test, y_train, y_test = self.prepare_training_data(indicators_data)
+                model = self.train_prediction_model(X_train, X_test, y_train, y_test)
 
-        # Send trade request
-        result = mt5.order_send(request)
-        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-            print(f"Order executed: TP = {tp_price}, SL = {sl_price}")
-            last_trade_time = time.time()  # Update last trade time
-        else:
-            print(f"Order execution failed: {result.comment if result else 'No response'}")
+                latest_data = indicators_data.iloc[-1:]
+                X_latest = StandardScaler().fit_transform(latest_data[
+                    ['sma_50', 'ema_20', 'rsi', 'macd', 'atr',
+                     'bbands_upper', 'bbands_lower', 'willr']
+                ])
 
-    else:
-        print("Position already open or outside session hours. Skipping...")
+                signal = model.predict(X_latest)[0]
+                self.execute_trade(signal, model, X_latest)
 
-    # Log trade details
-    log_data.append({
-        "time": pd.Timestamp.now(),
-        "buy_condition": buy_condition,
-        "sell_condition": sell_condition,
-        "ask_price": ask_price,
-        "bid_price": bid_price,
-        "atr": atr_5m,
-        "breakout_high": breakout_high,
-        "breakout_low": breakout_low,
-    })
+                time.sleep(self.interval)
 
-    time.sleep(2)  # Wait 2 seconds before checking again
+            except Exception as e:
+                self.logger.error(f"Trading cycle error: {e}")
+                time.sleep(self.interval)
+
+
+def main():
+    bot = MT5TradingBot(symbol='XAUUSDm')
+    bot.run_trading_cycle()
+
+
+if __name__ == "__main__":
+    main()
