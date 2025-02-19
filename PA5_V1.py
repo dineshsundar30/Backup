@@ -27,18 +27,18 @@ class PriceActionTrader:
             print("MT5 initialization failed!")
             raise Exception("MT5 initialization failed")
         print(f"MT5 connected successfully for {self.symbol}")
-
+        
         # Get symbol info for pip calculation
         self.symbol_info = mt5.symbol_info(self.symbol)
         if self.symbol_info is None:
             raise Exception(f"Failed to get symbol info for {self.symbol}")
-
+        
         # Calculate pip value
         self.point = self.symbol_info.point
         self.digits = self.symbol_info.digits
         self.pip_multiplier = 10 if self.digits == 3 or self.digits == 5 else 1
         self.pip_value = self.point * self.pip_multiplier
-
+        
         print(f"Pip value for {self.symbol}: {self.pip_value}")
 
     def get_candles(self, count=500):
@@ -187,18 +187,17 @@ class PriceActionTrader:
             stop_loss = entry_price + sl_distance
             # Take profit is 3x the SL distance (1:3 ratio)
             take_profit = entry_price - (sl_distance * self.risk_reward_ratio)
-
+            
         return stop_loss, take_profit
 
-    def calculate_sl_distance(self, df, direction):
+    def calculate_sl_distance(self, df, direction, entry_price):
         """Calculate appropriate SL distance based on ATR and pattern"""
         atr = self.calculate_atr(df).iloc[-1]
-
+        
         # Default SL is 1x ATR
         sl_distance = atr
-
+        
         # You can adjust based on specific patterns
-        last_candle = df.iloc[-1]
         if direction == "buy":
             # For buy, measure from entry to recent low
             recent_low = min(df['low'].iloc[-3:])
@@ -211,7 +210,7 @@ class PriceActionTrader:
             pattern_based_sl = recent_high - entry_price
             # Use the smaller of the two (but with a minimum of 0.5 ATR)
             sl_distance = max(min(sl_distance, pattern_based_sl), 0.5 * atr)
-
+            
         return sl_distance
 
     def place_trade(self, direction, entry_price, stop_loss, take_profit):
@@ -223,11 +222,11 @@ class PriceActionTrader:
         # Calculate SL and TP distances in pips
         sl_pips = abs(entry_price - stop_loss) / self.pip_value
         tp_pips = abs(entry_price - take_profit) / self.pip_value
-
+        
         # Log risk-reward details
         logging.info(f"Trade setup - Direction: {direction}, Entry: {entry_price:.5f}")
         logging.info(f"SL: {stop_loss:.5f} ({sl_pips:.1f} pips), TP: {take_profit:.5f} ({tp_pips:.1f} pips)")
-        logging.info(f"Risk-Reward Ratio: 1:{tp_pips / sl_pips:.2f}")
+        logging.info(f"Risk-Reward Ratio: 1:{tp_pips/sl_pips:.2f}")
 
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
@@ -256,7 +255,7 @@ class PriceActionTrader:
         print(f"Entry Price: {entry_price:.5f}")
         print(f"Stop Loss: {stop_loss:.5f} ({sl_pips:.1f} pips)")
         print(f"Take Profit: {take_profit:.5f} ({tp_pips:.1f} pips)")
-        print(f"Risk-Reward Ratio: 1:{tp_pips / sl_pips:.2f}")
+        print(f"Risk-Reward Ratio: 1:{tp_pips/sl_pips:.2f}")
         print(f"Lot Size: {self.lot_size}")
         print("----------------------------------------\n")
         return True
@@ -304,25 +303,25 @@ class PriceActionTrader:
                 if current_trend == "uptrend":
                     if (pin_bar == "bullish" or engulfing == "bullish") and not doji:
                         print("\n🔼 BULLISH SIGNAL DETECTED")
-
+                        
                         # Calculate optimal SL distance based on market conditions
-                        sl_distance = self.calculate_sl_distance(df, "buy")
-
+                        sl_distance = self.calculate_sl_distance(df, "buy", entry_price)
+                        
                         # Apply 1:3 risk-reward ratio to determine SL and TP
                         stop_loss, take_profit = self.calculate_sl_tp("buy", entry_price, sl_distance)
-
+                        
                         self.place_trade("buy", entry_price, stop_loss, take_profit)
 
                 elif current_trend == "downtrend":
                     if (pin_bar == "bearish" or engulfing == "bearish") and not doji:
                         print("\n🔽 BEARISH SIGNAL DETECTED")
-
+                        
                         # Calculate optimal SL distance based on market conditions
-                        sl_distance = self.calculate_sl_distance(df, "sell")
-
+                        sl_distance = self.calculate_sl_distance(df, "sell", entry_price)
+                        
                         # Apply 1:3 risk-reward ratio to determine SL and TP
                         stop_loss, take_profit = self.calculate_sl_tp("sell", entry_price, sl_distance)
-
+                        
                         self.place_trade("sell", entry_price, stop_loss, take_profit)
 
                 time.sleep(5)
@@ -334,5 +333,5 @@ class PriceActionTrader:
 
 
 if __name__ == "__main__":
-    trader = PriceActionTrader("XAUUSDm")
+    trader = PriceActionTrader("EURUSDm")
     trader.run()
