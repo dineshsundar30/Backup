@@ -9,15 +9,15 @@ import pytz
 from datetime import datetime
 import sys
 
-# Trading parameters
-SYMBOL = "XAUUSDm"  # Gold pair
+# Trading parameters - Customizable
+SYMBOL = "XAUUSDm"  # Change to your desired pair (e.g., "EURUSD", "XAUUSD", "GBPJPY", etc.)
 TIMEFRAME = mt5.TIMEFRAME_H1  # Change to your preferred timeframe
 LOT_SIZE = 0.01  # Fixed lot size as requested
 MAX_ACTIVE_TRADES = 1  # Only one trade at a time
 
-# Risk management parameters - adjusted for XAUUSD volatility
-STOP_LOSS_POINTS = 200  # Stop loss in points (2.0 USD for XAUUSD)
-TAKE_PROFIT_POINTS = 400  # Take profit in points (4.0 USD for XAUUSD)
+# Risk/Reward parameters - will be auto-adjusted based on the selected pair
+SL_RISK_USD = 10  # Target stop loss in USD
+TP_REWARD_USD = 20  # Target take profit in USD (1:2 risk-reward ratio)
 
 
 def initialize_mt5(account, password, server):
@@ -36,6 +36,50 @@ def initialize_mt5(account, password, server):
 
     print(f"[INFO] Connected to account #{account}")
     return True
+
+
+def get_symbol_info(symbol):
+    """Get detailed information about the trading symbol"""
+    info = mt5.symbol_info(symbol)
+    if info is None:
+        print(f"[ERROR] Failed to get info for {symbol}: {mt5.last_error()}")
+        return None
+
+    # Create a dictionary with relevant information
+    symbol_data = {
+        "point": info.point,
+        "digits": info.digits,
+        "contract_size": info.trade_contract_size,
+        "currency": info.currency_profit,
+        "tick_size": info.trade_tick_size,
+        "tick_value": info.trade_tick_value,
+        "min_volume": info.volume_min,
+        "max_volume": info.volume_max,
+        "volume_step": info.volume_step
+    }
+
+    # Determine if it's forex, gold, or other
+    if symbol.endswith('USD') and len(symbol) == 6:
+        symbol_data["type"] = "forex"
+    elif symbol == "XAUUSD":
+        symbol_data["type"] = "gold"
+    else:
+        symbol_data["type"] = "other"
+
+    return symbol_data
+
+
+def calculate_point_value(symbol_data):
+    """Calculate the USD value of one point for the given symbol"""
+    # For most forex pairs, one pip is typically 0.0001 (10^-4) or 0.01 (10^-2) for JPY pairs
+    # One pip = 10 points for 5-digit brokers
+
+    if symbol_data["type"] == "forex":
+        # For standard forex pairs (approximate)
+        return symbol_data["tick_value"] / symbol_data["tick_size"] * symbol_data["point"]
+    else:
+        # For other instruments, use tick value
+        return symbol_data["tick_value"]
 
 
 def get_historical_data(symbol, timeframe, num_bars=1000):
@@ -115,32 +159,43 @@ def get_active_positions(symbol):
     return len(positions)
 
 
-def calculate_sl_tp(symbol, order_type, entry_price):
-    """Calculate Stop Loss and Take Profit levels in price for XAUUSD"""
-    # Get symbol info to determine point value
-    symbol_info = mt5.symbol_info(symbol)
-    if symbol_info is None:
-        print(f"[ERROR] Failed to get symbol info for {symbol}")
-        # Use default values as fallback for XAUUSD
-        point = 0.01
-    else:
-        point = symbol_info.point
+def calculate_sl_tp_points(symbol_data, entry_price, order_type):
+    """Calculate Stop Loss and Take Profit in points based on USD risk"""
+    point_value = calculate_point_value(symbol_data)
 
-    # For XAUUSD, 1 point is typically 0.01 USD
+    # Calculate how many points equal our target USD risk/reward
+    sl_points = int(SL_RISK_USD / (point_value * LOT_SIZE))
+    tp_points = int(TP_REWARD_USD / (point_value * LOT_SIZE))
+
+    # Ensure minimum distance
+    min_points = 10
+    sl_points = max(sl_points, min_points)
+    tp_points = max(tp_points, min_points)
+
+    # Calculate actual SL/TP prices
     if order_type == mt5.ORDER_TYPE_BUY:
-        sl = entry_price - STOP_LOSS_POINTS * point
-        tp = entry_price + TAKE_PROFIT_POINTS * point
+        sl_price = entry_price - sl_points * symbol_data["point"]
+        tp_price = entry_price + tp_points * symbol_data["point"]
     else:  # SELL order
-        sl = entry_price + STOP_LOSS_POINTS * point
-        tp = entry_price - TAKE_PROFIT_POINTS * point
+        sl_price = entry_price + sl_points * symbol_data["point"]
+        tp_price = entry_price - tp_points * symbol_data["point"]
 
-    return round(sl, 2), round(tp, 2)  # XAUUSD typically has 2 decimal places
+    # Round to the correct number of digits for the instrument
+    sl_price = round(sl_price, symbol_data["digits"])
+    tp_price = round(tp_price, symbol_data["digits"])
+
+    return sl_price, tp_price, sl_points, tp_points
 
 
-def place_trade(symbol, lot_size, prediction, current_price, order_type):
+def place_trade(symbol, symbol_data, lot_size, prediction, current_price, order_type):
     """Place a trade in MT5 with SL and TP"""
     # Calculate Stop Loss and Take Profit levels
-    sl, tp = calculate_sl_tp(symbol, order_type, current_price)
+    sl, tp, sl_points, tp_points = calculate_sl_tp_points(symbol_data, current_price, order_type)
+
+    # Calculate actual USD risk based on final points
+    point_value = calculate_point_value(symbol_data)
+    actual_risk_usd = sl_points * point_value * lot_size
+    actual_reward_usd = tp_points * point_value * lot_size
 
     # Fill order request structure
     request = {
@@ -151,7 +206,7 @@ def place_trade(symbol, lot_size, prediction, current_price, order_type):
         "price": current_price,
         "sl": sl,
         "tp": tp,
-        "deviation": 30,  # Increased deviation for XAUUSD due to potential slippage
+        "deviation": 20,  # Allowed slippage in points
         "magic": 123456,  # Expert Advisor ID
         "comment": "Python Trading Bot",
         "type_time": mt5.ORDER_TIME_GTC,
@@ -168,9 +223,12 @@ def place_trade(symbol, lot_size, prediction, current_price, order_type):
 
     order_type_str = 'BUY' if order_type == mt5.ORDER_TYPE_BUY else 'SELL'
     print(f"[TRADE] {order_type_str} Order placed - Ticket #{result.order}")
-    print(f"[TRADE] Entry: {current_price:.2f}, SL: {sl:.2f}, TP: {tp:.2f}")
     print(
-        f"[TRADE] Prediction: {prediction:.2f}, Risk: ${STOP_LOSS_POINTS / 100:.1f}, Reward: ${TAKE_PROFIT_POINTS / 100:.1f}")
+        f"[TRADE] Entry: {current_price:.{symbol_data['digits']}f}, SL: {sl:.{symbol_data['digits']}f}, TP: {tp:.{symbol_data['digits']}f}")
+    print(f"[TRADE] Prediction: {prediction:.{symbol_data['digits']}f}")
+    print(
+        f"[TRADE] Risk: ${actual_risk_usd:.2f}, Reward: ${actual_reward_usd:.2f}, Ratio: 1:{actual_reward_usd / actual_risk_usd:.1f}")
+
     return True
 
 
@@ -189,21 +247,46 @@ def generate_trading_signal(model, features, current_data, last_close):
         return mt5.ORDER_TYPE_SELL, prediction
 
 
+def get_signal_threshold(symbol_data):
+    """Determine appropriate signal threshold based on symbol type"""
+    if symbol_data["type"] == "forex":
+        return 0.01  # 0.01% for regular forex pairs
+    elif symbol_data["type"] == "gold":
+        return 0.05  # 0.05% for gold
+    else:
+        return 0.03  # 0.03% for other instruments
+
+
 def main():
     # Account credentials - replace with your actual credentials
     account = 204296999
     password = "dk@Demo07"
     server = "Exness-MT5Trial7"
 
-    print("[STARTING] Gold (XAUUSD) Trading Bot")
+    print("[STARTING] MT5 Universal Trading Bot")
     print(f"[CONFIG] Symbol: {SYMBOL}, Lot Size: {LOT_SIZE}, Max Positions: {MAX_ACTIVE_TRADES}")
-    print(f"[CONFIG] Stop Loss: ${STOP_LOSS_POINTS / 100:.1f}, Take Profit: ${TAKE_PROFIT_POINTS / 100:.1f}")
+    print(f"[CONFIG] Target Risk: ${SL_RISK_USD}, Target Reward: ${TP_REWARD_USD}")
 
     # Initialize connection to MT5
     if not initialize_mt5(account, password, server):
         return
 
     try:
+        # Get symbol information
+        symbol_data = get_symbol_info(SYMBOL)
+        if symbol_data is None:
+            print(f"[ERROR] Unable to get information for {SYMBOL}. Exiting.")
+            mt5.shutdown()
+            return
+
+        # Calculate and display symbol-specific info
+        signal_threshold = get_signal_threshold(symbol_data)
+        point_value = calculate_point_value(symbol_data)
+
+        print(f"[INFO] Symbol Type: {symbol_data['type']}")
+        print(f"[INFO] Point Value: ${point_value:.6f}")
+        print(f"[INFO] Signal Threshold: {signal_threshold}%")
+
         # Initial data load and model training
         print("[INFO] Loading historical data...")
         historical_data = get_historical_data(SYMBOL, TIMEFRAME)
@@ -239,30 +322,34 @@ def main():
                     # Get last close price
                     last_close = processed_current['close'].iloc[-1]
 
-                    # Get current symbol info
-                    symbol_info = mt5.symbol_info(SYMBOL)
-                    if symbol_info is None:
-                        print(f"[ERROR] Failed to get symbol info for {SYMBOL}")
+                    # Get current symbol info for latest prices
+                    symbol_info_tick = mt5.symbol_info_tick(SYMBOL)
+                    if symbol_info_tick is None:
+                        print(f"[ERROR] Failed to get symbol tick info for {SYMBOL}")
                         continue
 
-                    current_price = symbol_info.ask if symbol_info.ask > 0 else symbol_info.bid
+                    # Use appropriate price based on order type
+                    # Will be determined after the signal, but get both ready
+                    bid_price = symbol_info_tick.bid
+                    ask_price = symbol_info_tick.ask
 
                     # Generate signal
                     order_type, prediction = generate_trading_signal(model, features, processed_current, last_close)
 
-                    # Determine if we should take a trade - adjusted threshold for XAUUSD
-                    # Gold is more volatile, so we use a slightly higher threshold
+                    # Use appropriate price based on order type
+                    current_price = ask_price if order_type == mt5.ORDER_TYPE_BUY else bid_price
+
+                    # Determine if we should take a trade
                     price_diff_percent = abs(prediction - last_close) / last_close * 100
 
-                    # Only trade if prediction differs from current price by a meaningful amount
-                    # For XAUUSD, we use 0.05% (higher than forex pairs)
-                    if price_diff_percent > 0.05:
+                    # Only trade if prediction differs from current price by more than threshold
+                    if price_diff_percent > signal_threshold:
                         order_type_str = 'BUY' if order_type == mt5.ORDER_TYPE_BUY else 'SELL'
-                        print(
-                            f"[SIGNAL] {order_type_str} - Current: {last_close:.2f}, Predicted: {prediction:.2f}, Diff: {price_diff_percent:.3f}%")
+                        print(f"[SIGNAL] {order_type_str} - Current: {last_close:.{symbol_data['digits']}f}, "
+                              f"Predicted: {prediction:.{symbol_data['digits']}f}, Diff: {price_diff_percent:.3f}%")
 
                         # Place trade
-                        place_trade(SYMBOL, LOT_SIZE, prediction, current_price, order_type)
+                        place_trade(SYMBOL, symbol_data, LOT_SIZE, prediction, current_price, order_type)
                     else:
                         # No significant signal
                         print(f"[INFO] No significant signal - Diff: {price_diff_percent:.3f}%")
