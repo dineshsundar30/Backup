@@ -16,8 +16,8 @@ LOT_SIZE = 0.01  # Fixed lot size as requested
 MAX_ACTIVE_TRADES = 1  # Only one trade at a time
 
 # Risk/Reward parameters - will be auto-adjusted based on the selected pair
-SL_RISK_USD = 10  # Target stop loss in USD
-TP_REWARD_USD = 20  # Target take profit in USD (1:2 risk-reward ratio)
+SL_RISK_USD = 5  # Target stop loss in USD
+TP_REWARD_USD = 10  # Target take profit in USD (1:2 risk-reward ratio)
 
 
 def initialize_mt5(account, password, server):
