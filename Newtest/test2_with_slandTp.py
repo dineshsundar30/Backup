@@ -9,7 +9,7 @@ import pytz
 from datetime import datetime
 import sys
 
-# Trading parameters
+# Trading parameters for eurusd
 SYMBOL = "EURUSD"  # Change to your desired forex pair
 TIMEFRAME = mt5.TIMEFRAME_H1  # Change to your preferred timeframe
 LOT_SIZE = 0.01  # Fixed lot size as requested
