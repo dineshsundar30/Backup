@@ -9,6 +9,7 @@ import pytz
 from datetime import datetime
 import sys
 
+#with auto tp and sl
 # Trading parameters - Customizable
 SYMBOL = "XAUUSDm"  # Change to your desired pair (e.g., "EURUSD", "XAUUSD", "GBPJPY", etc.)
 TIMEFRAME = mt5.TIMEFRAME_M5  # Change to your preferred timeframe
