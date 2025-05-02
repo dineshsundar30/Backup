@@ -115,7 +115,7 @@ def prepare_features(data):
     df['momentum'] = df['close'].diff()
     df['rsi'] = talib.RSI(df['close'], timeperiod=14)
     df['macd'], df['signal'], df['hist'] = talib.MACD(df['close'], fastperiod=12, slowperiod=26, signalperiod=9)
-    
+
     # Calculate ATR for volatility measurement
     df['atr'] = talib.ATR(df['high'], df['low'], df['close'], timeperiod=ATR_PERIOD)
 
@@ -170,30 +170,30 @@ def calculate_dynamic_sl_tp(symbol_data, current_data, entry_price, order_type):
     """
     # Get current ATR value as a measure of volatility
     current_atr = current_data['atr'].iloc[-1]
-    
+
     # Calculate point value
     point_value = calculate_point_value(symbol_data)
-    
+
     # Base SL on current ATR (typically 1-2x ATR)
     # For more volatile markets, use lower multiple
     if symbol_data["type"] == "gold":
         atr_sl_multiplier = 1.5  # Gold can be volatile
     else:
         atr_sl_multiplier = 1.0  # Standard for forex
-    
+
     # Calculate SL in price terms based on ATR
     sl_price_movement = current_atr * atr_sl_multiplier
-    
+
     # Convert SL price movement to points
     sl_points = int(sl_price_movement / symbol_data["point"])
-    
+
     # Ensure minimum SL distance (at least 10 points)
     min_sl_points = 20
     sl_points = max(sl_points, min_sl_points)
-    
+
     # TP must be at least MIN_RISK_REWARD_RATIO times the SL (e.g., 2x)
     tp_points = int(sl_points * MIN_RISK_REWARD_RATIO)
-    
+
     # Calculate actual SL/TP prices
     if order_type == mt5.ORDER_TYPE_BUY:
         sl_price = entry_price - sl_points * symbol_data["point"]
@@ -201,15 +201,15 @@ def calculate_dynamic_sl_tp(symbol_data, current_data, entry_price, order_type):
     else:  # SELL order
         sl_price = entry_price + sl_points * symbol_data["point"]
         tp_price = entry_price - tp_points * symbol_data["point"]
-    
+
     # Round to the correct number of digits for the instrument
     sl_price = round(sl_price, symbol_data["digits"])
     tp_price = round(tp_price, symbol_data["digits"])
-    
+
     # Calculate actual risk/reward in USD
     risk_usd = sl_points * point_value * LOT_SIZE
     reward_usd = tp_points * point_value * LOT_SIZE
-    
+
     return sl_price, tp_price, sl_points, tp_points, risk_usd, reward_usd
 
 
@@ -276,13 +276,13 @@ def get_signal_threshold(symbol_data, current_data):
     """Determine appropriate signal threshold based on symbol type and volatility"""
     # Get current ATR value
     current_atr = current_data['atr'].iloc[-1]
-    
+
     # Get current price
     current_price = current_data['close'].iloc[-1]
-    
+
     # Calculate ATR as percentage of price
     atr_percent = (current_atr / current_price) * 100
-    
+
     # Base threshold on symbol type but adjust for current volatility
     if symbol_data["type"] == "forex":
         base_threshold = 0.01  # 0.01% for regular forex pairs
@@ -290,11 +290,11 @@ def get_signal_threshold(symbol_data, current_data):
         base_threshold = 0.05  # 0.05% for gold
     else:
         base_threshold = 0.03  # 0.03% for other instruments
-    
+
     # Adjust threshold based on current ATR (more volatile = higher threshold)
     # For example, if ATR is high, we want a stronger signal before trading
     adjusted_threshold = base_threshold * (1 + atr_percent)
-    
+
     return adjusted_threshold
 
 
@@ -393,7 +393,8 @@ def main():
                               f"Predicted: {prediction:.{symbol_data['digits']}f}, Diff: {price_diff_percent:.3f}%")
 
                         # Place trade with dynamic SL/TP
-                        place_trade(SYMBOL, symbol_data, LOT_SIZE, prediction, current_price, order_type, processed_current)
+                        place_trade(SYMBOL, symbol_data, LOT_SIZE, prediction, current_price, order_type,
+                                    processed_current)
                     else:
                         # No significant signal
                         print(f"[INFO] No significant signal - Diff: {price_diff_percent:.3f}%")
