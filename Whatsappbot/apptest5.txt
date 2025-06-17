@@ -1,0 +1,392 @@
+import flet as ft
+import urllib.parse
+import csv
+import json
+import os
+import time
+import threading
+
+CONTACTS_FILE = "contacts.json"
+ACCENT_COLOR = ft.Colors.BLUE_500
+
+
+def generate_whatsapp_link(phone, message):
+    encoded_msg = urllib.parse.quote(message)
+    return f"https://wa.me/{phone}?text={encoded_msg}"
+
+
+def save_contacts_to_file(contacts):
+    with open(CONTACTS_FILE, "w", encoding="utf-8") as f:
+        json.dump(contacts, f)
+
+
+def load_contacts_from_file():
+    if os.path.exists(CONTACTS_FILE):
+        with open(CONTACTS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
+
+def main(page: ft.Page):
+    page.title = "Smart Broadcast Messenger"
+    page.theme_mode = ft.ThemeMode.LIGHT
+    page.bgcolor = ft.Colors.GREY_50
+    page.scroll = "auto"
+    page.padding = 10
+
+    contacts = load_contacts_from_file()
+    contacts_view = ft.Column([])
+    selected_contacts = set()
+    bulk_sending = False
+
+    header = ft.Column([
+        ft.Text("📬 Smart Broadcast", size=20, weight="bold", color=ACCENT_COLOR, text_align=ft.TextAlign.CENTER),
+        ft.Text("Messenger", size=20, weight="bold", color=ACCENT_COLOR, text_align=ft.TextAlign.CENTER)
+    ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+
+    name_field = ft.TextField(label="Business Name", expand=True, border_radius=8)
+    message_field = ft.TextField(label="Daily Message", multiline=True, expand=True,
+                                 min_lines=3, max_lines=5, border_radius=8)
+
+    name_input = ft.TextField(label="Customer Name", expand=True, border_radius=8)
+    phone_input = ft.TextField(label="Phone Number", expand=True, border_radius=8)
+
+    # Bulk send controls
+    delay_field = ft.TextField(
+        label="In seconds",
+        value="3",
+        width=100,
+        border_radius=8,
+        expand=True,
+        keyboard_type=ft.KeyboardType.NUMBER
+    )
+
+
+    progress_bar = ft.ProgressBar(width=400, visible=False)
+    progress_text = ft.Text("", visible=False)
+
+    def open_whatsapp(phone):
+        if not message_field.value or not message_field.value.strip():
+            page.snack_bar = ft.SnackBar(content=ft.Text("Please enter a message first!"))
+            page.snack_bar.open = True
+            page.update()
+            return
+        link = generate_whatsapp_link(phone, message_field.value)
+        page.launch_url(link)
+
+    def remove_contact(index):
+        del contacts[index]
+        save_contacts_to_file(contacts)
+        selected_contacts.clear()
+        add_contact_view()
+        page.update()
+
+    def toggle_contact_selection(index, checkbox):
+        if checkbox.value:
+            selected_contacts.add(index)
+        else:
+            selected_contacts.discard(index)
+        update_bulk_controls()
+        page.update()
+
+    def select_all_contacts(e):
+        select_all = e.control.value
+        selected_contacts.clear()
+        if select_all:
+            selected_contacts.update(range(len(contacts)))
+        add_contact_view()
+        update_bulk_controls()
+        page.update()
+
+    def update_bulk_controls():
+        select_all_checkbox.value = len(selected_contacts) == len(contacts) and len(contacts) > 0
+        bulk_send_btn.disabled = len(selected_contacts) == 0 or bulk_sending
+        page.update()
+
+    def bulk_send_messages():
+        nonlocal bulk_sending
+
+        if not message_field.value or not message_field.value.strip():
+            page.snack_bar = ft.SnackBar(content=ft.Text("Please enter a message first!"))
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        if not selected_contacts:
+            page.snack_bar = ft.SnackBar(content=ft.Text("Please select contacts to send messages!"))
+            page.snack_bar.open = True
+            page.update()
+            return
+
+        bulk_sending = True
+        update_bulk_controls()
+
+        # Show progress
+        progress_bar.visible = True
+        progress_text.visible = True
+        progress_bar.value = 0
+        page.update()
+
+        def send_bulk():
+            try:
+                delay = float(delay_field.value) if delay_field.value else 3.0
+                selected_list = list(selected_contacts)
+                total = len(selected_list)
+
+                for i, contact_index in enumerate(selected_list):
+                    contact = contacts[contact_index]
+
+                    # Update progress
+                    progress_bar.value = (i + 1) / total
+                    progress_text.value = f"Sending to {contact['name']} ({i + 1}/{total})"
+                    page.update()
+
+                    # Open WhatsApp
+                    link = generate_whatsapp_link(contact['phone'], message_field.value)
+                    page.launch_url(link)
+
+                    # Wait before next message (except for last one)
+                    if i < total - 1:
+                        time.sleep(delay)
+
+                # Hide progress and show completion
+                progress_bar.visible = False
+                progress_text.visible = False
+                bulk_sending = False
+                update_bulk_controls()
+
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"Successfully sent messages to {total} contacts!")
+                )
+                page.snack_bar.open = True
+                page.update()
+
+            except Exception as e:
+                progress_bar.visible = False
+                progress_text.visible = False
+                bulk_sending = False
+                update_bulk_controls()
+
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"Error during bulk send: {str(e)}")
+                )
+                page.snack_bar.open = True
+                page.update()
+
+        # Run in separate thread to avoid blocking UI
+        threading.Thread(target=send_bulk, daemon=True).start()
+
+    def add_contact_view():
+        contacts_view.controls.clear()
+
+        if not contacts:
+            contacts_view.controls.append(
+                ft.Container(
+                    content=ft.Text("No contacts added yet",
+                                    color=ft.Colors.GREY_600,
+                                    text_align=ft.TextAlign.CENTER),
+                    padding=20,
+                    alignment=ft.alignment.center
+                )
+            )
+        else:
+            for i, c in enumerate(contacts):
+                checkbox = ft.Checkbox(
+                    value=i in selected_contacts,
+                    on_change=lambda e, idx=i: toggle_contact_selection(idx, e.control)
+                )
+
+                contact_row = ft.Container(
+                    content=ft.Row([
+                        checkbox,
+                        ft.Column([
+                            ft.Text(c['name'], size=14, weight="bold"),
+                            ft.Text(c['phone'], size=12, color=ft.Colors.GREY_600)
+                        ], spacing=2, expand=True),
+                        ft.IconButton(
+                            ft.Icons.MESSAGE,
+                            on_click=lambda e, p=c['phone']: open_whatsapp(p),
+                            bgcolor=ACCENT_COLOR,
+                            icon_color=ft.Colors.WHITE,
+                            tooltip="Send WhatsApp"
+                        ),
+                        ft.IconButton(
+                            ft.Icons.DELETE,
+                            on_click=lambda e, idx=i: remove_contact(idx),
+                            tooltip="Remove"
+                        )
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                    padding=10,
+                    margin=ft.margin.only(bottom=5),
+                    bgcolor=ft.Colors.WHITE,
+                    border_radius=8,
+                    border=ft.border.all(1, ft.Colors.GREY_300)
+                )
+                contacts_view.controls.append(contact_row)
+
+        update_bulk_controls()
+        page.update()
+
+    def add_contact(e):
+        if name_input.value and phone_input.value:
+            contacts.append({"name": name_input.value, "phone": phone_input.value})
+            save_contacts_to_file(contacts)
+            name_input.value = ""
+            phone_input.value = ""
+            add_contact_view()
+            page.snack_bar = ft.SnackBar(content=ft.Text("Contact added successfully!"))
+            page.snack_bar.open = True
+            page.update()
+        else:
+            page.snack_bar = ft.SnackBar(content=ft.Text("Please fill both name and phone!"))
+            page.snack_bar.open = True
+            page.update()
+
+    def process_csv(e: ft.FilePickerResultEvent):
+        if e.files:
+            try:
+                with open(e.files[0].path, newline='', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    added_count = 0
+                    for row in reader:
+                        if 'Name' in row and 'Phone' in row:
+                            contacts.append({"name": row['Name'], "phone": row['Phone']})
+                            added_count += 1
+                save_contacts_to_file(contacts)
+                selected_contacts.clear()
+                add_contact_view()
+                page.snack_bar = ft.SnackBar(content=ft.Text(f"Added {added_count} contacts from CSV!"))
+                page.snack_bar.open = True
+                page.update()
+            except Exception as ex:
+                page.snack_bar = ft.SnackBar(content=ft.Text(f"Error reading CSV: {str(ex)}"))
+                page.snack_bar.open = True
+                page.update()
+
+    file_picker = ft.FilePicker(on_result=process_csv)
+    page.overlay.append(file_picker)
+
+    upload_btn = ft.ElevatedButton(
+        "Upload CSV",
+        on_click=lambda e: file_picker.pick_files(allow_multiple=False, allowed_extensions=["csv"]),
+        color=ft.Colors.WHITE,
+        bgcolor=ft.Colors.GREEN_600,
+        width=200,
+        height=40
+    )
+
+    add_btn = ft.ElevatedButton(
+        "Add Contact",
+        on_click=add_contact,
+        color=ft.Colors.WHITE,
+        bgcolor=ACCENT_COLOR,
+        width=200,
+        height=40
+    )
+
+    # Bulk send controls
+    select_all_checkbox = ft.Checkbox(
+        label="Select All",
+        value=False,
+        on_change=select_all_contacts
+    )
+
+    bulk_send_btn = ft.ElevatedButton(
+        "📤 Send to Selected",
+        on_click=lambda e: bulk_send_messages(),
+        color=ft.Colors.WHITE,
+        bgcolor=ft.Colors.ORANGE_600,
+        width=200,
+        height=40,
+        disabled=True
+    )
+
+    main_content = ft.Column([
+        ft.Container(content=header, padding=ft.padding.only(bottom=20), alignment=ft.alignment.center),
+
+        ft.Container(
+            content=ft.Column([
+                ft.Text("📝 Business Details", size=16, weight="bold", color=ft.Colors.BLACK87),
+                name_field,
+                message_field,
+            ], spacing=10),
+            padding=15,
+            bgcolor=ft.Colors.WHITE,
+            border_radius=10,
+            margin=ft.margin.only(bottom=15),
+            shadow=ft.BoxShadow(blur_radius=5, color=ft.Colors.GREY_300)
+        ),
+
+        ft.Container(
+            content=ft.Column([
+                ft.Text("📞 Add Contacts", size=16, weight="bold", color=ft.Colors.BLACK87),
+                ft.Column([
+                    name_input,
+                    phone_input,
+                    ft.Container(content=add_btn, alignment=ft.alignment.center, padding=ft.padding.only(top=10))
+                ], spacing=10),
+                ft.Row([
+                    ft.Container(expand=True, height=1, bgcolor=ft.Colors.GREY_300),
+                    ft.Text(" or ", color=ft.Colors.GREY_600, italic=True),
+                    ft.Container(expand=True, height=1, bgcolor=ft.Colors.GREY_300),
+                ], alignment=ft.MainAxisAlignment.CENTER),
+                ft.Container(content=upload_btn, alignment=ft.alignment.center)
+            ], spacing=15),
+            padding=15,
+            bgcolor=ft.Colors.WHITE,
+            border_radius=10,
+            margin=ft.margin.only(bottom=15),
+            shadow=ft.BoxShadow(blur_radius=5, color=ft.Colors.GREY_300)
+        ),
+
+        # Bulk Send Controls
+        ft.Container(
+            content=ft.Column([
+                ft.Text("📤 Bulk Send", size=16, weight="bold", color=ft.Colors.BLACK87),
+                ft.Row([
+                    ft.Text("Delay between messages:", size=14),
+                    delay_field,
+                    ft.Text("", size=14, color=ft.Colors.GREY_600)
+                ], alignment=ft.MainAxisAlignment.START, spacing=10),
+                ft.Row([
+                    select_all_checkbox,
+                    bulk_send_btn
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                ft.Container(
+                    content=ft.Column([
+                        progress_text,
+                        progress_bar
+                    ], spacing=10),
+                    alignment=ft.alignment.center
+                )
+            ], spacing=15),
+            padding=15,
+            bgcolor=ft.Colors.WHITE,
+            border_radius=10,
+            margin=ft.margin.only(bottom=15),
+            shadow=ft.BoxShadow(blur_radius=5, color=ft.Colors.GREY_300)
+        ),
+
+        ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Text("📋 Contact List", size=16, weight="bold"),
+                    ft.Text(f"({len(contacts)})", size=14, color=ft.Colors.GREY_600)
+                ]),
+                ft.Container(
+                    content=contacts_view,
+                    padding=10
+                )
+            ], spacing=10),
+            padding=15,
+            bgcolor=ft.Colors.WHITE,
+            border_radius=10,
+            shadow=ft.BoxShadow(blur_radius=5, color=ft.Colors.GREY_300)
+        )
+    ], spacing=0, scroll=ft.ScrollMode.AUTO)
+
+    page.add(ft.Container(content=main_content, padding=10, expand=True, alignment=ft.alignment.top_center))
+    add_contact_view()
+
+
+ft.app(target=main, view=ft.AppView.FLET_APP)
