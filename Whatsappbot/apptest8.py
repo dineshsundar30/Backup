@@ -272,15 +272,18 @@ def main(page: ft.Page):
                 bgcolor=ft.Colors.WHITE, padding=10, border_radius=10, margin=10
             ),
             ft.Container(content=contacts_view),
-            ft.Container(
-                content=ft.Text("@2025 Copyright for 🤖 Smart Broadcast Messenger By 'Dk'",
+           ft.Container(
+                           ft.Container(
+                content=ft.Text("@2025 copyright for 🤖 Smart Broadcast Messenger By 'Dk'",
                                 size=12,
                                 color=ft.Colors.GREY_600,
                                 text_align=ft.TextAlign.CENTER),
                 alignment=ft.alignment.center,
                 padding=10,
                 margin=ft.margin.only(top=20),
-            ), scroll=ft.ScrollMode.ALWAYS)
+            )
+
+                ], scroll=ft.ScrollMode.ALWAYS)
     )
 
     add_contact_view()
