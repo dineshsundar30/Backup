@@ -1,0 +1,79 @@
+-- create
+CREATE TABLE EMPLOYEE (
+  empId INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  dept TEXT NOT NULL,
+  salary INTEGER,
+  projects INTEGER
+);
+
+-- insert
+INSERT INTO EMPLOYEE VALUES (0001, 'Clark', 'Sales',10000,5);
+INSERT INTO EMPLOYEE VALUES (0002, 'Dave', 'Accounting',2000,2);
+INSERT INTO EMPLOYEE VALUES (0003, 'Ava', 'Sales',3000,3);
+INSERT INTO EMPLOYEE VALUES (0004, 'siva', 'Sales',80000,8);
+INSERT INTO EMPLOYEE VALUES (0005, 'kumar', 'engineering',5000,2);
+INSERT INTO EMPLOYEE VALUES (0006, 'dinesh', 'Sales',5000,2);
+INSERT INTO EMPLOYEE VALUES (0007, 'vasanth', 'engineering',5000,2);
+INSERT INTO EMPLOYEE VALUES (0008, 'mohan', 'engineering',30000,2);
+INSERT INTO EMPLOYEE VALUES (0009, 'david', 'Accounting',30000,2);
+INSERT INTO EMPLOYEE VALUES (0010, 'jan', 'Ai',30000,0);
+
+
+-- fetch 
+select max(salary) from EMPLOYEE;
+select max(salary) from EMPLOYEE where salary < (select max(salary) from EMPLOYEE );
+select max(salary) from EMPLOYEE where salary < (select max(salary) from EMPLOYEE where salary < (select max(salary) from EMPLOYEE));
+
+
+-- to get the count with group by
+select count(*),avg(salary) as average_salary from EMPLOYEE  group by dept;
+select count(*),avg(salary) from EMPLOYEE  group by dept having count(*)>1;
+-- to find number of EMPLOYEE in each dept
+select dept,count(*) from EMPLOYEE group by dept
+
+
+
+-- to get salary of greatern then the by dep average
+SELECT e.salary
+FROM EMPLOYEE e
+WHERE e.salary > (
+    SELECT AVG(f.salary)
+    FROM EMPLOYEE f 
+    where e.dept = f.dept );
+
+
+-- to select top 3 salary
+select distinct salary from EMPLOYEE order by salary desc fetch first 3 rows only;
+-- or
+select distinct salary from EMPLOYEE order by salary desc limit 3;
+-- to find who not working in project 
+
+
+
+
+-- to find the who is not working in any project 
+
+select empId, name, dept from EMPLOYEE where projects < 1;
+
+-- with join
+select e.empId e.name from EMPLOYEE e left join project p on e.empId = p.empId 
+where p.project is NULL;
+
+
+
+
+-- to rank EMPLOYEE based on salary
+select empId,name,salary,rank() over(order by salary desc) from EMPLOYEE;
+-- by dept
+select empId,name,salary,rank() over(
+  PARTITION BY dept  
+  order by salary desc ) 
+from EMPLOYEE
+
+
+
+-- for interview pospective
+-- to find customers who have placed more then 5 orders
+
+select customer_id,count(*) from orders group by customer_id having count(*) > 5;
