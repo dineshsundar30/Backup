@@ -1,8 +1,10 @@
 import streamlit as st
+import time
 from config.settings import settings
 from src.gitlab_client import GitLabClient
 from src.ai_agent import AICodeReviewerAgent
 from src.rf_analyzer import RobotFrameworkAnalyzer
+from src.local_repo import LocalRepoScanner
 from src.ui.components import render_score_card, render_issues_list, generate_gitlab_markdown_report
 
 def render_gitlab_tab():
@@ -70,30 +72,80 @@ def render_gitlab_tab():
         xpath_registry = {}
         variable_registry = {}
         try:
-            with st.spinner(
-                f"🔍 Scanning project files on `{mr_details.target_branch}` for cross-file XPath & variable checks..."
-            ):
-                project_files_paths = client.fetch_project_file_list(
-                    project_identifier,
-                    branch=mr_details.target_branch
-                )
-                if project_files_paths:
-                    analyzer = RobotFrameworkAnalyzer()
-                    project_files_content = {}
-                    for fp in project_files_paths:
-                        content = client.fetch_file_content(
-                            project_identifier, fp, branch=mr_details.target_branch
-                        )
-                        if content:
-                            project_files_content[fp] = content
+            status_container = st.status("🔍 Analyzing project for cross-file checks...", expanded=True)
+            with status_container:
+                project_files_content = {}
+                used_local = False
 
+                # --- Step 1: Try local repository first ---
+                st.write("⏳ Checking local repository...")
+                time.sleep(0.2)
+                scanner = LocalRepoScanner(settings.LOCAL_REPO_PATH)
+
+                if scanner.is_available():
+                    st.write(f"✅ Local repo found at `{settings.LOCAL_REPO_PATH}`")
+                    st.write(f"⏳ Checking for branch `{mr_details.target_branch}`...")
+                    time.sleep(0.2)
+
+                    if scanner.has_branch(mr_details.target_branch):
+                        st.write(f"✅ Branch `{mr_details.target_branch}` is available")
+                        st.write("⏳ Pulling latest changes...")
+                        time.sleep(0.2)
+
+                        success, project_files_content = scanner.scan_for_branch(
+                            mr_details.target_branch
+                        )
+                        if success:
+                            used_local = True
+                            st.write(f"✅ Loaded **{len(project_files_content)}** files from local repo")
+                        else:
+                            st.write("⚠️ Could not read from local repo, switching to API...")
+                    else:
+                        st.write(f"⚠️ Branch `{mr_details.target_branch}` not found locally, using API fallback...")
+                else:
+                    st.write("⚠️ Local repo not available, using API fallback...")
+
+                # --- Step 2: Fallback to API if local didn't work ---
+                if not used_local:
+                    st.write("⏳ Fetching file list via GitLab API...")
+                    time.sleep(0.2)
+                    project_files_paths = client.fetch_project_file_list(
+                        project_identifier,
+                        branch=mr_details.target_branch
+                    )
+                    if project_files_paths:
+                        st.write(f"✅ Found **{len(project_files_paths)}** Robot Framework files")
+                        st.write("⏳ Downloading file contents...")
+                        for fp in project_files_paths:
+                            content = client.fetch_file_content(
+                                project_identifier, fp, branch=mr_details.target_branch
+                            )
+                            if content:
+                                project_files_content[fp] = content
+
+                # --- Step 3: Build registries ---
+                if project_files_content:
+                    analyzer = RobotFrameworkAnalyzer()
+
+                    st.write("⏳ Building XPath duplication registry...")
+                    time.sleep(0.2)
                     xpath_registry, variable_registry = analyzer.build_project_registry(
                         project_files_content
                     )
-                    st.caption(
-                        f"📂 Cross-file registry built from **{len(project_files_content)}** project files "
-                        f"({len(xpath_registry)} unique XPaths, {len(variable_registry)} unique variables)."
-                    )
+                    st.write(f"✅ XPath registry: **{len(xpath_registry)}** unique XPaths")
+
+                    st.write(f"✅ Variable registry: **{len(variable_registry)}** unique variables")
+
+                    st.write("⏳ Cross-referencing for duplicates...")
+                    time.sleep(0.2)
+                    st.write("✅ Cross-file analysis complete")
+
+                source_label = "local repo" if used_local else "GitLab API"
+            status_container.update(
+                label=f"✅ Project analysis complete — {len(project_files_content)} files via {source_label}",
+                state="complete",
+                expanded=False,
+            )
         except Exception as e:
             st.warning(
                 f"⚠️ Could not build full-project registry (cross-file checks will be skipped): {str(e)}"

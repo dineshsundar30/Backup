@@ -26,6 +26,9 @@ class Settings:
     OLLAMA_API_KEY: str = os.getenv("OLLAMA_API_KEY", "")
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
 
+    # Local Repository Path (for cross-file checks without re-downloading)
+    LOCAL_REPO_PATH: str = os.getenv("LOCAL_REPO_PATH", os.path.expanduser("~/projects/ivi_features"))
+
     # Review Settings
     REVIEW_STRICTNESS: str = os.getenv("REVIEW_STRICTNESS", "medium").lower()
 
